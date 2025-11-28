@@ -56,7 +56,7 @@
 #include <tf/transform_datatypes.h>
 #include <tf/transform_broadcaster.h>
 #include <geometry_msgs/Vector3.h>
-#include <livox_ros_driver/CustomMsg.h>
+#include <livox_ros_driver2/CustomMsg.h>
 #include "preprocess.h"
 #include <ikd-Tree/ikd_Tree.h>
 
@@ -299,7 +299,7 @@ void standard_pcl_cbk(const sensor_msgs::PointCloud2::ConstPtr &msg)
 
 double timediff_lidar_wrt_imu = 0.0;
 bool   timediff_set_flg = false;
-void livox_pcl_cbk(const livox_ros_driver::CustomMsg::ConstPtr &msg) 
+void livox_pcl_cbk(const livox_ros_driver2::CustomMsg::ConstPtr &msg) 
 {
     mtx_buffer.lock();
     double preprocess_start_time = omp_get_wtime();
@@ -583,15 +583,30 @@ void set_posestamp(T & out)
     out.pose.orientation.y = geoQuat.y;
     out.pose.orientation.z = geoQuat.z;
     out.pose.orientation.w = geoQuat.w;
-    
+}
+
+template<typename T>
+void set_twiststamp(T & out){
+    // transform velocity from body frame to world frame
+    V3D vel_body(state_point.vel(0), state_point.vel(1), state_point.vel(2));
+    V3D vel_world = state_point.rot * vel_body;
+
+    out.twist.linear.x = vel_world(0);
+    out.twist.linear.y = vel_world(1);
+    out.twist.linear.z = vel_world(2);
+
+    out.twist.angular.x = Measures.imu.back()->angular_velocity.x;
+    out.twist.angular.y = Measures.imu.back()->angular_velocity.y;
+    out.twist.angular.z = Measures.imu.back()->angular_velocity.z;
 }
 
 void publish_odometry(const ros::Publisher & pubOdomAftMapped)
 {
-    odomAftMapped.header.frame_id = "camera_init";
-    odomAftMapped.child_frame_id = "body";
+    odomAftMapped.header.frame_id = "uav1/map";
+    odomAftMapped.child_frame_id = "uav1/base_link";
     odomAftMapped.header.stamp = ros::Time().fromSec(lidar_end_time);// ros::Time().fromSec(lidar_end_time);
     set_posestamp(odomAftMapped.pose);
+    set_twiststamp(odomAftMapped.twist);
     pubOdomAftMapped.publish(odomAftMapped);
     auto P = kf.get_P();
     for (int i = 0; i < 6; i ++)
@@ -635,6 +650,14 @@ void publish_path(const ros::Publisher pubPath)
     }
 }
 
+void publish_vision_pose(const ros::Publisher pubVisionPose)
+{
+    set_posestamp(msg_body_pose);
+    msg_body_pose.header.stamp = ros::Time().fromSec(lidar_end_time);
+    msg_body_pose.header.frame_id = "map";
+
+    pubVisionPose.publish(msg_body_pose);
+}
 void h_share_model(state_ikfom &s, esekfom::dyn_share_datastruct<double> &ekfom_data)
 {
     double match_start = omp_get_wtime();
@@ -858,6 +881,8 @@ int main(int argc, char** argv)
             ("/Odometry", 100000);
     ros::Publisher pubPath          = nh.advertise<nav_msgs::Path> 
             ("/path", 100000);
+    ros::Publisher pubVisionPose =  nh.advertise<geometry_msgs::PoseStamped>
+            ("uav1/mavros/vision_pose/pose", 100000);
 //------------------------------------------------------------------------------------------------------
     signal(SIGINT, SigHandle);
     ros::Rate rate(5000);
@@ -980,6 +1005,7 @@ int main(int argc, char** argv)
             if (path_en)                         publish_path(pubPath);
             if (scan_pub_en || pcd_save_en)      publish_frame_world(pubLaserCloudFull);
             if (scan_pub_en && scan_body_pub_en) publish_frame_body(pubLaserCloudFull_body);
+            publish_vision_pose(pubVisionPose);
             // publish_effect_world(pubLaserCloudEffect);
             // publish_map(pubLaserCloudMap);
 
